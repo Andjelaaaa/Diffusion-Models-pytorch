@@ -18,72 +18,69 @@ from torchvision.utils import make_grid
 
 
 class Diffusion:
-    def __init__(self, noise_steps=1000, beta_start=1e-4, beta_end=0.02, img_size=256, device="cuda"):
+    def __init__(self, noise_steps=1000, beta_start=1e-4, beta_end=0.02, img_size=(78,78,64), device="cuda"):
         self.noise_steps = noise_steps
         self.beta_start = beta_start
         self.beta_end = beta_end
-        self.img_size = img_size
+        self.img_size = img_size  # Now a tuple representing (D, H, W)
         self.device = device
 
         self.beta = self.prepare_noise_schedule().to(device)
-        self.alpha = 1. - self.beta
+        self.alpha = 1.0 - self.beta
         self.alpha_hat = torch.cumprod(self.alpha, dim=0)
 
     def prepare_noise_schedule(self):
         return torch.linspace(self.beta_start, self.beta_end, self.noise_steps)
 
     def noise_images(self, x, t):
-        sqrt_alpha_hat = torch.sqrt(self.alpha_hat[t])[:, None, None, None]
-        sqrt_one_minus_alpha_hat = torch.sqrt(1 - self.alpha_hat[t])[:, None, None, None]
-        Ɛ = torch.randn_like(x)
-        return sqrt_alpha_hat * x + sqrt_one_minus_alpha_hat * Ɛ, Ɛ
+        # Adjust shapes for 3D data
+        sqrt_alpha_hat = torch.sqrt(self.alpha_hat[t])[:, None, None, None, None]
+        sqrt_one_minus_alpha_hat = torch.sqrt(1 - self.alpha_hat[t])[:, None, None, None, None]
+        ε = torch.randn_like(x)
+        x_t = sqrt_alpha_hat * x + sqrt_one_minus_alpha_hat * ε
+        return x_t, ε
 
     def sample_timesteps(self, n):
         return torch.randint(low=1, high=self.noise_steps, size=(n,))
 
     def sample(self, model, n):
-        logging.info(f"Sampling {n} new images....")
+        logging.info(f"Sampling {n} new images...")
         model.eval()
+        c_in = 1  # Number of input channels (adjust if necessary)
+        D, H, W = self.img_size  # Unpack the image dimensions
         with torch.no_grad():
-            x = torch.randn((n, 3, self.img_size, self.img_size)).to(self.device)
-            for i in tqdm(reversed(range(1, self.noise_steps)), position=0):
-                t = (torch.ones(n) * i).long().to(self.device)
+            x = torch.randn((n, c_in, D, H, W)).to(self.device)
+            for i in tqdm(reversed(range(1, self.noise_steps)), position=0, desc='Sampling'):
+                t = torch.full((n,), i, dtype=torch.long).to(self.device)
                 predicted_noise = model(x, t)
-                alpha = self.alpha[t][:, None, None, None]
-                alpha_hat = self.alpha_hat[t][:, None, None, None]
-                beta = self.beta[t][:, None, None, None]
+                alpha = self.alpha[t][:, None, None, None, None]
+                alpha_hat = self.alpha_hat[t][:, None, None, None, None]
+                beta = self.beta[t][:, None, None, None, None]
                 if i > 1:
                     noise = torch.randn_like(x)
                 else:
                     noise = torch.zeros_like(x)
-                x = 1 / torch.sqrt(alpha) * (x - ((1 - alpha) / (torch.sqrt(1 - alpha_hat))) * predicted_noise) + torch.sqrt(beta) * noise
+                x = (1 / torch.sqrt(alpha)) * (
+                    x - ((1 - alpha) / torch.sqrt(1 - alpha_hat)) * predicted_noise
+                ) + torch.sqrt(beta) * noise
         model.train()
+        # Normalize x to [0, 1] range
+        print('x min-max:', x.min(), x.max())
         x = (x.clamp(-1, 1) + 1) / 2
+        # Optionally, convert to uint8 if you plan to save or visualize the images
         x = (x * 255).type(torch.uint8)
         return x
 
-
-def train(args):
-    setup_logging(args.run_name)
-    device = args.device
-    train_dataloader, val_dataloader = get_data(args)
-    model = UNet().to(device)
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr)
-    mse = nn.MSELoss()
-    diffusion = Diffusion(img_size=args.img_size, device=device)
-    l = len(train_dataloader)
-    print('len(train_dataloader):', l)
-
+def plot_input(train_dataloader):
     train_img = next(iter(train_dataloader))
     print(train_img.keys())
-    print('SIZe', train_img['image'][0].size())
+    print('SIZE', train_img['image'][0].size())
+    image_path = train_img['image'][0]
     # Assuming train_img['image'] is a batch of images
     image = train_img['image'][0][0]  # Shape: (D, H, W)
 
-    # Indices of slices to plot
-    # slice_indices = [10, 20, 32, 50]
-    slice_indices = [100, 105, 32, 50]
-
+    # Slice indices to visualize
+    slice_indices = [int(image.shape[2]/3), int(image.shape[2]/2.5), int(image.shape[2]/2), int(image.shape[2]/1.5)]
     # Create a figure with 2x2 subplots
     fig, axs = plt.subplots(2, 2, figsize=(10, 10))
 
@@ -95,45 +92,92 @@ def train(args):
         axs[i].imshow(img_slice, cmap='gray')
         axs[i].set_title(f'Slice at index {idx}')
         axs[i].axis('off')  # Hide axis ticks and labels
-
+    # Add the image path as a suptitle
+    # fig.suptitle(f'Image Path: {image_path}', fontsize=12)
     plt.tight_layout()
     plt.show()
 
-    # Initialize W&B
-    # wandb.init(project="DiffusionModel", name=args.run_name, config=vars(args))
-    # wandb.watch(model, log="all")
+def train(args):
+    setup_logging(args.run_name)
+    device = args.device
+    train_dataloader, val_dataloader = get_data(args)
+    model = UNet().to(device)
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr)
+    mse = nn.MSELoss()
+    diffusion = Diffusion(img_size=(args.img_size, args.img_size, args.img_depth), device=device)
+    l = len(train_dataloader)
+    print('len(train_dataloader):', l)
 
-    # for epoch in range(args.epochs):
-    #     logging.info(f"Starting epoch {epoch}:")
-    #     pbar = tqdm(train_dataloader)
-    #     for i, batch_data in enumerate(pbar):
-    #         images = batch_data['image'].to(device)
-    #         images = images.to(device)
-    #         t = diffusion.sample_timesteps(images.shape[0]).to(device)
-    #         x_t, noise = diffusion.noise_images(images, t)
-    #         predicted_noise = model(x_t, t)
-    #         loss = mse(noise, predicted_noise)
+    # To visualize input images
+    # plot_input(train_dataloader)
+    # return True
+    
+    
+    # x = torch.randn(batch_size, channels, depth, height, width)
+    # t = torch.randint(0, 1000, (batch_size,))
 
-    #         optimizer.zero_grad()
-    #         loss.backward()
-    #         optimizer.step()
+    # model = UNet(c_in=channels, c_out=channels)
+    # output = model(x, t)
+    # print(output.shape)
 
-    #         pbar.set_postfix(MSE=loss.item())
-    #         # Log MSE to W&B
-    #         wandb.log({"MSE": loss.item()}, step=epoch * l + i)
+    # Initialize W&B and global_step
+    wandb.init(project="DiffusionModel", name=args.run_name, config=vars(args))
+    wandb.watch(model, log="all")
+    global_step = 0  # Initialize global step
 
-    #     sampled_images = diffusion.sample(model, n=images.shape[0])
-    #     save_images(sampled_images, os.path.join("results", args.run_name, f"epoch-{epoch}.jpg"))
+    for epoch in range(args.epochs):
+        logging.info(f"Starting epoch {epoch}:")
+        pbar = tqdm(train_dataloader)
+        for i, batch_data in enumerate(pbar):
+            images = batch_data['image'].to(device)
+            # Permute to (B, C, D, H, W)
+            images = images.permute(0, 1, 4, 2, 3)
+            t = diffusion.sample_timesteps(images.shape[0]).to(device)
+            x_t, noise = diffusion.noise_images(images, t)
+            predicted_noise = model(x_t, t)
+            loss = mse(noise, predicted_noise)
 
-    #     # Prepare images for logging
-    #     sampled_images = sampled_images.float() / 255.0  # Normalize to [0, 1]
-    #     # Log images to W&B
-    #     wandb.log({"Sampled Images": [wandb.Image(img) for img in sampled_images]}, step=epoch)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-    #     torch.save(model.state_dict(), os.path.join("models", args.run_name, f"ckpt.pt"))
+            pbar.set_postfix(MSE=loss.item())
+            # Log MSE to W&B
+            wandb.log({"MSE": loss.item()}, step=global_step)
+            # batch_step = epoch * l + i
+            global_step += 1  # Increment global step after each batch
 
-    # # Finish W&B run
-    # wandb.finish()
+        # After each epoch, sample images
+        sampled_images = diffusion.sample(model, n=1)  # Shape: [1, 1, D, H, W]
+
+        # Normalize images
+        sampled_images = sampled_images.float() / 255.0
+
+        # Save grid of slices
+        save_path = os.path.join("results", args.run_name, f"epoch-{epoch}.png")
+        gif_path = os.path.join("results", args.run_name, f"epoch-{epoch}.gif")
+        slices = [int(args.img_depth/3), int(args.img_depth/2.5), int(args.img_depth/2), int(args.img_depth/1.5)]  # Specify slices
+        print('Slice indices:', slices)
+        save_3d_images(sampled_images, save_path, slices=slices, nrow=len(slices), padding=2)
+
+        # **Create the animation**
+        save_3d_animation(sampled_images, gif_path)
+
+        # Log to W&B using the current global step
+        wandb.log({"Sampled Images": wandb.Image(save_path)}, step=global_step)
+        wandb.log({"Sampled Images Animation": wandb.Video(gif_path)}, step=global_step)
+
+        # Save the NIfTI file
+        nifti_path = os.path.join("results", args.run_name, f"epoch-{epoch}_sample-{i}.nii.gz")
+        save_nifti(sampled_images, nifti_path)
+
+        global_step += 1  # Increment after logging images
+
+        # Save the model checkpoint
+        torch.save(model.state_dict(), os.path.join("models", args.run_name, f"ckpt.pt"))
+
+    # Finish W&B run
+    wandb.finish()
 
 
 
@@ -152,16 +196,22 @@ def launch():
     import argparse
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
-    args.run_name = "DDPM_Unconditional"
-    args.epochs = 10
-    args.batch_size = 3
-    args.img_size = 128
-    args.depth_size = 64
+    args.run_name = "DDPM_Unconditional_it1"
+    # batch_size = 3
+    # channels = 3
+    # depth = 116
+    # height = 116
+    # width = 95
+    args.epochs = 100
+    args.batch_size = 1
+    args.pixdim = 3.0
+    args.img_size = 78
+    args.img_depth = 64
     # No subsampling
     args.slice_size = 1
-    args.crop_depth = 60   # Desired crop size along depth
-    args.crop_height = 120  # Desired crop size along height
-    args.crop_width = 120   # Desired crop size along width
+    # args.crop_depth = 60   # Desired crop size along depth
+    # args.crop_height = 120  # Desired crop size along height
+    # args.crop_width = 120   # Desired crop size along width
     args.num_workers = 5
     args.dataset_path = "/home/andjela/Documents/longitudinal-pediatric-completion/data/CP/"
     args.device = "cuda"
@@ -171,11 +221,11 @@ def launch():
 
 if __name__ == '__main__':
     launch()
-    device = "cuda"
-    model = UNet().to(device)
+    # device = "cuda"
+    # model = UNet().to(device)
     # ckpt = torch.load("./working/orig/ckpt.pt")
     # model.load_state_dict(ckpt)
-    diffusion = Diffusion(img_size=512, device=device)
+    # diffusion = Diffusion(img_size=512, device=device)
     # x = diffusion.sample(model, 8)
     # print(x.shape)
     # plt.figure(figsize=(32, 32))

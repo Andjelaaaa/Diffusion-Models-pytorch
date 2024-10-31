@@ -2,6 +2,7 @@ import os, random
 from pathlib import Path
 # from kaggle import api
 import torch
+import imageio
 import torchvision
 import torchvision.transforms as T
 import numpy as np
@@ -96,6 +97,63 @@ def plot_images(images):
     ], dim=-2).permute(1, 2, 0).cpu())
     plt.show()
 
+def save_3d_images(images, path, slices=None, **kwargs):
+    """
+    Saves a grid of slices from 3D images.
+
+    Args:
+        images (torch.Tensor): 5D tensor of shape (B, C, D, H, W)
+        path (str): Path to save the image
+        slices (list or None): List of slice indices to include. If None, use middle slices.
+        **kwargs: Additional keyword arguments for make_grid
+    """
+    # Ensure images are on CPU
+    images = images.cpu()
+    B, C, D, H, W = images.shape
+    print('images shape', images.shape)
+
+    if slices is None:
+        # Use the middle slice if no specific slices are provided
+        slices = [D // 2]
+
+    # Collect slices
+    slice_images = []
+    for idx in slices:
+        # Extract the slice at the specified depth
+        slice_img = images[:, :, idx, :, :]  # Shape: (B, C, H, W)
+        slice_images.append(slice_img)
+
+    # Concatenate slices along the batch dimension
+    slice_images = torch.cat(slice_images, dim=0)  # Shape: (B * num_slices, C, H, W)
+
+    # Create a grid of images
+    grid = torchvision.utils.make_grid(slice_images, **kwargs)
+
+    # Convert to numpy array and save
+    ndarr = grid.permute(1, 2, 0).numpy()
+    im = Image.fromarray((ndarr * 255).astype(np.uint8))
+    im.save(path)
+
+def save_3d_animation(images, path):
+    """
+    Saves an animation (GIF) of the 3D volume slices.
+
+    Args:
+        images (torch.Tensor): 5D tensor of shape (B, C, D, H, W)
+        path (str): Path to save the GIF
+    """
+    images = images.squeeze().cpu().numpy()  # Shape: (D, H, W)
+    frames = []
+    for i in range(images.shape[0]):
+        frame = (images[i] * 255).astype(np.uint8)
+        frames.append(frame)
+    # Save as GIF
+    imageio.mimsave(path, frames, fps=10)
+
+def save_nifti(tensor, filename):
+    tensor = tensor.squeeze().cpu().numpy()  # Remove batch and channel dimensions
+    nifti_img = nib.Nifti1Image(tensor, affine=np.eye(4))
+    nib.save(nifti_img, filename)
 
 def save_images(images, path, **kwargs):
     grid = torchvision.utils.make_grid(images, **kwargs)
@@ -154,9 +212,9 @@ def get_transforms(is_train=True, args=None):
             LoadImaged(keys=['image']),
             EnsureChannelFirstd(keys=['image']),
             # RandSpatialCropd(keys=['image'], roi_size=(args.crop_depth, args.crop_height, args.crop_width), random_center=True, random_size=False),
-            Spacingd(keys=['image'], pixdim=(2.0, 2.0, 2.0), mode=('bilinear', 'nearest')),
+            Spacingd(keys=['image'], pixdim=(args.pixdim, args.pixdim, args.pixdim), mode=('bilinear')),
             # Resized(keys=['image'], spatial_size=(args.depth_size, args.img_size, args.img_size)),
-            NormalizeIntensityd(keys=['image'], nonzero=True, channel_wise=True),
+            NormalizeIntensityd(keys=['image'], nonzero=True),#, channel_wise=True),
             ToTensord(keys=['image']),
         ])
     else:
@@ -164,7 +222,8 @@ def get_transforms(is_train=True, args=None):
             LoadImaged(keys=['image']),
             EnsureChannelFirstd(keys=['image']),
             # CenterSpatialCropd(keys=['image'], roi_size=(args.crop_depth, args.crop_height, args.crop_width)),
-            Resized(keys=['image'], spatial_size=(args.depth_size, args.img_size, args.img_size)),
+            # Resized(keys=['image'], spatial_size=(args.img_depth, args.img_size, args.img_size)),
+            Spacingd(keys=['image'], pixdim=(3.0, 3.0, 3.0), mode=('bilinear')),
             NormalizeIntensityd(keys=['image'], nonzero=True, channel_wise=True),
             ToTensord(keys=['image']),
         ])
