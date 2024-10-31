@@ -18,57 +18,109 @@ from torchvision.utils import make_grid
 
 
 class Diffusion:
-    def __init__(self, noise_steps=1000, beta_start=1e-4, beta_end=0.02, img_size=(78,78,64), device="cuda"):
+    def __init__(
+        self, 
+        noise_steps=1000, 
+        beta_start=1e-4, 
+        beta_end=0.02, 
+        img_size=(78, 78, 64),  # (D, H, W)
+        device="cuda"
+    ):
         self.noise_steps = noise_steps
         self.beta_start = beta_start
         self.beta_end = beta_end
-        self.img_size = img_size  # Now a tuple representing (D, H, W)
+        self.img_size = img_size  # (D, H, W)
         self.device = device
 
-        self.beta = self.prepare_noise_schedule().to(device)
-        self.alpha = 1.0 - self.beta
-        self.alpha_hat = torch.cumprod(self.alpha, dim=0)
+        # Prepare the noise schedule
+        self.beta = self.prepare_noise_schedule().to(self.device)  # Shape: (noise_steps,)
+        self.alpha = 1.0 - self.beta  # Shape: (noise_steps,)
+        self.alpha_hat = torch.cumprod(self.alpha, dim=0)  # Shape: (noise_steps,)
 
     def prepare_noise_schedule(self):
         return torch.linspace(self.beta_start, self.beta_end, self.noise_steps)
 
     def noise_images(self, x, t):
-        # Adjust shapes for 3D data
-        sqrt_alpha_hat = torch.sqrt(self.alpha_hat[t])[:, None, None, None, None]
+        """
+        Adds noise to the images x at timestep t.
+        
+        Args:
+            x (torch.Tensor): Original images of shape (B, C, D, H, W)
+            t (torch.Tensor): Timesteps of shape (B,)
+        
+        Returns:
+            x_t (torch.Tensor): Noisy images at timestep t
+            ε (torch.Tensor): The noise added to the images
+        """
+        # Ensure that t is of shape (B,)
+        if t.dim() == 0:
+            t = t.unsqueeze(0)
+
+        # Reshape alpha_hat[t] to (B, 1, 1, 1, 1) to broadcast correctly
+        sqrt_alpha_hat = torch.sqrt(self.alpha_hat[t])[:, None, None, None, None]  # Shape: (B, 1, 1, 1, 1)
         sqrt_one_minus_alpha_hat = torch.sqrt(1 - self.alpha_hat[t])[:, None, None, None, None]
-        ε = torch.randn_like(x)
-        x_t = sqrt_alpha_hat * x + sqrt_one_minus_alpha_hat * ε
+
+        ε = torch.randn_like(x)  # Noise of same shape as x
+        x_t = sqrt_alpha_hat * x + sqrt_one_minus_alpha_hat * ε  # Add noise to the images
         return x_t, ε
 
     def sample_timesteps(self, n):
-        return torch.randint(low=1, high=self.noise_steps, size=(n,))
+        """
+        Samples random timesteps for a batch of size n.
+        
+        Args:
+            n (int): Batch size
+        
+        Returns:
+            t (torch.Tensor): Random timesteps of shape (n,)
+        """
+        return torch.randint(low=0, high=self.noise_steps, size=(n,))
 
     def sample(self, model, n):
+        """
+        Generates n new images by reverse diffusion.
+
+        Args:
+            model: The trained diffusion model
+            n (int): Number of images to sample
+
+        Returns:
+            x (torch.Tensor): Generated images of shape (n, C, D, H, W)
+        """
         logging.info(f"Sampling {n} new images...")
         model.eval()
         c_in = 1  # Number of input channels (adjust if necessary)
-        D, H, W = self.img_size  # Unpack the image dimensions
+        D, H, W = self.img_size  # Unpack image dimensions
+
         with torch.no_grad():
-            x = torch.randn((n, c_in, D, H, W)).to(self.device)
-            for i in tqdm(reversed(range(1, self.noise_steps)), position=0, desc='Sampling'):
-                t = torch.full((n,), i, dtype=torch.long).to(self.device)
-                predicted_noise = model(x, t)
-                alpha = self.alpha[t][:, None, None, None, None]
+            x = torch.randn((n, c_in, D, H, W)).to(self.device)  # Start from random noise
+            for i in tqdm(reversed(range(self.noise_steps)), position=0, desc='Sampling'):
+                t = torch.full((n,), i, dtype=torch.long).to(self.device)  # Timesteps t of shape (n,)
+
+                # Get model prediction of noise at timestep t
+                predicted_noise = model(x, t)  # Should output shape (n, c_in, D, H, W)
+
+                # Get alpha, alpha_hat, and beta at timestep t
+                alpha = self.alpha[t][:, None, None, None, None]  # Shape: (n, 1, 1, 1, 1)
                 alpha_hat = self.alpha_hat[t][:, None, None, None, None]
                 beta = self.beta[t][:, None, None, None, None]
-                if i > 1:
+
+                # If not the last step, add noise
+                if i > 0:
                     noise = torch.randn_like(x)
                 else:
                     noise = torch.zeros_like(x)
+
+                # Update x using the reverse diffusion formula
                 x = (1 / torch.sqrt(alpha)) * (
                     x - ((1 - alpha) / torch.sqrt(1 - alpha_hat)) * predicted_noise
                 ) + torch.sqrt(beta) * noise
+
+            # After the loop, x should be the generated images
         model.train()
         # Normalize x to [0, 1] range
-        print('x min-max:', x.min(), x.max())
         x = (x.clamp(-1, 1) + 1) / 2
-        # Optionally, convert to uint8 if you plan to save or visualize the images
-        x = (x * 255).type(torch.uint8)
+        x = (x * 255).type(torch.uint8)  # Convert to uint8 if necessary
         return x
 
 def plot_input(train_dataloader):
@@ -104,7 +156,7 @@ def train(args):
     model = UNet().to(device)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr)
     mse = nn.MSELoss()
-    diffusion = Diffusion(img_size=(args.img_size, args.img_size, args.img_depth), device=device)
+    diffusion = Diffusion(img_size=(args.img_depth, args.img_size, args.img_size), device=device)
     l = len(train_dataloader)
     print('len(train_dataloader):', l)
 
@@ -130,8 +182,10 @@ def train(args):
         pbar = tqdm(train_dataloader)
         for i, batch_data in enumerate(pbar):
             images = batch_data['image'].to(device)
+            # print('images shape before:', images.shape)
             # Permute to (B, C, D, H, W)
             images = images.permute(0, 1, 4, 2, 3)
+            # print('images shape after:', images.shape)
             t = diffusion.sample_timesteps(images.shape[0]).to(device)
             x_t, noise = diffusion.noise_images(images, t)
             predicted_noise = model(x_t, t)
