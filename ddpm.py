@@ -215,15 +215,15 @@ def train(args):
         save_3d_images(sampled_images, save_path, slices=slices, nrow=len(slices), padding=2)
 
         # **Create the animation**
-        save_3d_animation(sampled_images, gif_path)
+        # save_3d_animation(sampled_images, gif_path)
 
         # Log to W&B using the current global step
         wandb.log({"Sampled Images": wandb.Image(save_path)}, step=global_step)
-        wandb.log({"Sampled Images Animation": wandb.Video(gif_path)}, step=global_step)
+        # wandb.log({"Sampled Images Animation": wandb.Video(gif_path)}, step=global_step)
 
         # Save the NIfTI file
-        nifti_path = os.path.join("results", args.run_name, f"epoch-{epoch}_sample-{i}.nii.gz")
-        save_nifti(sampled_images, nifti_path)
+        # nifti_path = os.path.join("results", args.run_name, f"epoch-{epoch}_sample-{i}.nii.gz")
+        # save_nifti(sampled_images, nifti_path)
 
         global_step += 1  # Increment after logging images
 
@@ -250,13 +250,13 @@ def launch():
     import argparse
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
-    args.run_name = "DDPM_Unconditional_it1"
+    args.run_name = "DDPM_Unconditional_it2"
     # batch_size = 3
     # channels = 3
     # depth = 116
     # height = 116
     # width = 95
-    args.epochs = 100
+    args.epochs = 300
     args.batch_size = 1
     args.pixdim = 3.0
     args.img_size = 78
@@ -267,21 +267,23 @@ def launch():
     # args.crop_height = 120  # Desired crop size along height
     # args.crop_width = 120   # Desired crop size along width
     args.num_workers = 5
-    args.dataset_path = "/home/andjela/Documents/longitudinal-pediatric-completion/data/CP/"
+    # args.dataset_path = "/home/andjela/Documents/longitudinal-pediatric-completion/data/CP/"
+    args.dataset_path = "/home/andjela/joplin-intra-inter/CP_rigid_trios/CP/trios_sorted_by_age.csv"
     args.device = "cuda"
-    args.lr = 3e-4
+    args.lr = 3e-5
     train(args)
 
 
 if __name__ == '__main__':
-    launch()
-    # device = "cuda"
-    # model = UNet().to(device)
-    # ckpt = torch.load("./working/orig/ckpt.pt")
-    # model.load_state_dict(ckpt)
-    # diffusion = Diffusion(img_size=512, device=device)
-    # x = diffusion.sample(model, 8)
-    # print(x.shape)
+    # launch()
+    # create_animation('results/DDPM_Unconditional_it2/', duration=214)
+    device = "cuda"
+    model = UNet().to(device)
+    ckpt = torch.load("models/DDPM_Unconditional_it2/ckpt.pt")
+    model.load_state_dict(ckpt)
+    diffusion = Diffusion(img_size=(64, 74, 74), device=device)
+    x = diffusion.sample(model, 4)
+    plot_generated_images(x)
     # plt.figure(figsize=(32, 32))
     # plt.imshow(torch.cat([
     #     torch.cat([i for i in x.cpu()], dim=-1),

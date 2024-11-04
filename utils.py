@@ -1,5 +1,7 @@
 import os, random
 from pathlib import Path
+import pandas as pd
+import re
 # from kaggle import api
 import torch
 import imageio
@@ -9,6 +11,7 @@ import numpy as np
 from PIL import Image
 # from fastdownload import FastDownload
 from matplotlib import pyplot as plt
+from matplotlib.animation import FuncAnimation
 from torch.utils.data import Dataset, DataLoader, Subset
 import nibabel as nib
 import numpy as np
@@ -96,6 +99,65 @@ def plot_images(images):
         torch.cat([i for i in images.cpu()], dim=-1),
     ], dim=-2).permute(1, 2, 0).cpu())
     plt.show()
+
+def plot_generated_images(x, figsize=(15, 15)):
+    # Move tensor to CPU and detach from computation graph if needed
+    x = x.cpu().detach()
+
+    # Select the middle slice along the depth dimension for each image
+    num_images = x.shape[0]
+    middle_slice = x.shape[2] // 2  # 64 // 2 = 32, the middle slice
+
+    # Set up the plot based on the number of images
+    fig, axes = plt.subplots(1, num_images, figsize=figsize)
+    axes = axes if num_images > 1 else [axes]  # Ensure axes is iterable
+
+    # Plot the middle slice of each 3D image
+    for i in range(num_images):
+        # Select the middle slice along the depth dimension and remove the channel dimension
+        img_slice = x[i, 0, middle_slice, :, :]  # Shape: (74, 74) for grayscale
+        
+        # Display the selected slice
+        axes[i].imshow(img_slice, cmap="gray")
+        axes[i].axis("off")  # Hide axes for a cleaner look
+        axes[i].set_title(f"Image {i+1} - Depth Slice {middle_slice}")
+
+    plt.show()
+
+def create_animation(folder_path, output_file='animation.gif'):
+    # Collect and sort PNG images in the folder
+    images = sorted(
+        [img for img in os.listdir(folder_path) if img.endswith('.png')],
+        key=lambda x: int(re.search(r'\d+', x).group())  # Extract numeric part and sort by it
+    )
+    if not images:
+        raise ValueError("No PNG images found in the specified folder.")
+
+    # Load the first image to set up the plot
+    fig, ax = plt.subplots()
+    img = Image.open(os.path.join(folder_path, images[0]))
+    im = ax.imshow(img)
+
+    def update(frame):
+        # Update the frame by loading the next image
+        image_path = os.path.join(folder_path, images[frame])
+        img = Image.open(image_path)
+        im.set_array(img)
+
+        # Extract epoch number from filename (assuming it's in the filename as a number)
+        epoch_number = os.path.splitext(images[frame])[0]  # Remove .png to get just the filename part
+        ax.set_title(f"Epoch: {epoch_number.split('-')[-1]}")
+
+        return [im]
+
+    # Create the animation using FuncAnimation
+    
+    anim = FuncAnimation(fig, update, frames=len(images), interval=len(images), blit=True)
+
+    # Save the animation as a GIF
+    anim.save(output_file, writer='pillow', fps=1000 // len(images))
+
+    print(f"Animation saved as {output_file}")
 
 def save_3d_images(images, path, slices=None, **kwargs):
     """
@@ -229,20 +291,38 @@ def get_transforms(is_train=True, args=None):
         ])
     return transforms
 
-def get_data_dicts(root_dir):
-    data_dicts = []
-    for sub_dir in os.listdir(root_dir):
-        sub_path = os.path.join(root_dir, sub_dir)
-        if os.path.isdir(sub_path):
-            for trio_dir in os.listdir(sub_path):
-                trio_path = os.path.join(sub_path, trio_dir)
-                if os.path.isdir(trio_path):
-                    for filename in os.listdir(trio_path):
-                        if filename.endswith('.nii.gz'):
-                            file_path = os.path.join(trio_path, filename)
-                            data_dicts.append({'image': file_path})
-    return data_dicts
+# def get_data_dicts(root_dir):
+#     data_dicts = []
+#     for sub_dir in os.listdir(root_dir):
+#         sub_path = os.path.join(root_dir, sub_dir)
+#         if os.path.isdir(sub_path):
+#             for trio_dir in os.listdir(sub_path):
+#                 trio_path = os.path.join(sub_path, trio_dir)
+#                 if os.path.isdir(trio_path):
+#                     for filename in os.listdir(trio_path):
+#                         if filename.endswith('.nii.gz'):
+#                             file_path = os.path.join(trio_path, filename)
+#                             data_dicts.append({'image': file_path})
+#     return data_dicts
+def get_data_dict(filepath, mode='train'):
+    # Load the data from the CSV file
+    df = pd.read_csv(filepath)
 
+    data_dict = []
+    
+    # Filter the DataFrame based on the mode in the 'traintest' column
+    if mode == 'train':
+        filtered_df = df[df['traintest'] == 'train']
+    elif mode == 'test':
+        filtered_df = df[df['traintest'] == 'test']
+    else:
+        raise ValueError("Mode must be 'train' or 'test'")
+    
+    for i in range(len(filtered_df)):
+        # Use double quotes for column access inside an f-string
+        data_dict.append({'image': f"/home/andjela/joplin-intra-inter/CP_rigid_trios/CP/{filtered_df['sub_id_bids'].iloc[i]}/{filtered_df['trio_id'].iloc[i]}/{filtered_df['scan_id'].iloc[i]}.nii.gz"})
+    
+    return data_dict
 # Custom Transforms for 3D Data
 class Resize3D:
     def __init__(self, size):
@@ -265,8 +345,8 @@ class Normalize3D:
 
 def get_data(args):
     # Prepare data dictionaries
-    train_data_dicts = get_data_dicts(os.path.join(args.dataset_path, 'train_folder'))
-    val_data_dicts = get_data_dicts(os.path.join(args.dataset_path, 'val_folder'))
+    train_data_dicts = get_data_dict(args.dataset_path)
+    val_data_dicts = get_data_dict(args.dataset_path, mode='test')
 
     # Define transforms
     train_transforms = get_transforms(is_train=True, args=args)
