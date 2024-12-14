@@ -2,6 +2,11 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch
+from torch import nn
+from torchviz import make_dot
+import os
+
 
 def one_param(m):
     "get model first parameter"
@@ -218,3 +223,16 @@ class UNet_conditional(UNet):
             t += self.label_emb(y)
 
         return self.unet_forwad(x, t)
+    
+if __name__ == '__main__':
+    # Instantiate the model and dummy inputs
+    model = UNet()
+    x = torch.randn(1, 1, 64, 78, 78)  # Batch size, Channels, Depth, Height, Width
+    t = torch.randn(1)
+
+    # Create a visualization graph
+    output = model(x, t)
+    dot = make_dot(output, params=dict(model.named_parameters()))
+    output_path = "results/unet_visualization.png"
+    print(os.getcwd())
+    dot.render(output_path, format="png")

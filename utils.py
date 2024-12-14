@@ -2,13 +2,17 @@ import os, random
 from pathlib import Path
 import pandas as pd
 import re
+import glob
+from sklearn.model_selection import train_test_split
 # from kaggle import api
 import torch
+import logging
 import imageio
 import torchvision
 import torchvision.transforms as T
 import numpy as np
 from PIL import Image
+from scipy.ndimage import zoom
 # from fastdownload import FastDownload
 from matplotlib import pyplot as plt
 from matplotlib.animation import FuncAnimation
@@ -32,6 +36,37 @@ from monai.transforms import (
 cifar_labels = "airplane,automobile,bird,cat,deer,dog,frog,horse,ship,truck".split(",")
 alphabet_labels = "A B C D E F G H I J K L M N O P Q R S T U V W X Y Z".split(" ")
 
+def load_resize_save_nifti(input_path, output_path, new_shape):
+    """
+    Load a NIfTI image, resize it directly using NumPy, adjust the affine matrix, and save it.
+    
+    Args:
+        input_path (str): Path to the input NIfTI file.
+        output_path (str): Path to save the resized NIfTI file.
+        new_shape (tuple): Desired shape (D, H, W) for resizing.
+    """
+    # Load the NIfTI image
+    img = nib.load(input_path)
+    data = img.get_fdata()  # Get the image data as a NumPy array
+    original_affine = img.affine  # Get the original affine matrix
+    
+    # Compute the zoom factors for resizing
+    original_shape = data.shape
+    zoom_factors = [new_dim / old_dim for new_dim, old_dim in zip(new_shape, original_shape)]
+    
+    # Resize the image using scipy.ndimage.zoom
+    resized_data = zoom(data, zoom_factors, order=3)  # Cubic interpolation (order=3)
+    
+    # Adjust the affine matrix to account for new voxel sizes
+    scaling_factors = np.diag([1/zoom_factors[0], 1/zoom_factors[1], 1/zoom_factors[2], 1])
+    new_affine = original_affine @ scaling_factors
+    
+    # Create a new NIfTI image with the adjusted affine matrix
+    resized_img = nib.Nifti1Image(resized_data, affine=new_affine)
+    
+    # Save the resized image
+    nib.save(resized_img, output_path)
+    print(f"Resized NIfTI image saved to: {output_path}")
 
 def set_seed(s, reproducible=False):
     "Set random seed for `random`, `torch`, and `numpy` (where available)"
@@ -101,6 +136,18 @@ def plot_images(images):
     plt.show()
 
 def plot_generated_images(x, figsize=(15, 15)):
+    """
+    Save the middle slices of generated 3D images as a PNG file.
+
+    Parameters:
+    x (torch.Tensor): A 4D tensor of shape (N, C, D, H, W) where
+                      N is the number of images,
+                      C is the number of channels,
+                      D is the depth (slices),
+                      H and W are height and width.
+    filename (str): The path and name of the file to save the image.
+    figsize (tuple): The size of the figure.
+    """
     # Move tensor to CPU and detach from computation graph if needed
     x = x.cpu().detach()
 
@@ -121,8 +168,86 @@ def plot_generated_images(x, figsize=(15, 15)):
         axes[i].imshow(img_slice, cmap="gray")
         axes[i].axis("off")  # Hide axes for a cleaner look
         axes[i].set_title(f"Image {i+1} - Depth Slice {middle_slice}")
+    # Save the figure to a file
+    plt.savefig("results/generated_img_new.png", bbox_inches='tight')
+    plt.close(fig)  # Close the figure to free memory
+    # plt.show()
 
-    plt.show()
+def create_comparison_img_noise(folder_path, number_steps):
+
+    # Generate filenames for the specified number
+    original_filename = f"Original Image_{number_steps}_"
+    noisy_filename = f"Noisy Image x_t_{number_steps}_"
+    noise_filename = f"Noise_{number_steps}_"
+    pred_noise_filename = f"Predicted Noise_{number_steps}_"
+
+    # Find the full filenames in the folder
+    original_image_path = None
+    noisy_image_path = None
+    noise_image_path = None
+    pred_noise_image_path = None
+
+    for filename in os.listdir(folder_path):
+        if filename.startswith(original_filename):
+            original_image_path = os.path.join(folder_path, filename)
+        elif filename.startswith(noise_filename):
+            noise_image_path = os.path.join(folder_path, filename)
+        elif filename.startswith(noisy_filename):
+            noisy_image_path = os.path.join(folder_path, filename)
+        elif filename.startswith(pred_noise_filename):
+            pred_noise_image_path = os.path.join(folder_path, filename)
+
+
+    # Ensure all images are found
+    if not (original_image_path and noise_image_path and noisy_image_path and pred_noise_image_path):
+        print(original_image_path)
+        print(noise_image_path)
+        print(noisy_image_path)
+        print(pred_noise_image_path)
+        print("Some images are missing. Please check the folder.")
+    else:
+        # Load images
+        original_image = np.array(Image.open(original_image_path))
+        noise_image = np.array(Image.open(noise_image_path))
+        noisy_image = np.array(Image.open(noisy_image_path))
+        pred_noise_image = np.array(Image.open(pred_noise_image_path))
+        
+        # Compute MSE for the 2D images
+        mse_image = (noise_image - pred_noise_image) ** 2
+        total_mse = np.mean(mse_image)  # Compute the total MSE as the mean of the pixel-wise MSE values
+
+        # Plot images side by side
+        fig, axes = plt.subplots(1, 5, figsize=(20, 5))
+
+        axes[0].imshow(original_image, cmap="gray")
+        axes[0].set_title("Original Image")
+        axes[0].axis("off")
+
+        axes[1].imshow(noisy_image, cmap="gray")
+        axes[1].set_title("Noisy Image x_t")
+        axes[1].axis("off")
+
+        axes[2].imshow(noise_image, cmap="gray")
+        axes[2].set_title("Noise")
+        axes[2].axis("off")
+
+        axes[3].imshow(pred_noise_image, cmap="gray")
+        axes[3].set_title("Predicted Noise")
+        axes[3].axis("off")
+
+        # Plot MSE colormap
+        mse_colormap = axes[4].imshow(mse_image, cmap="hot")  # Use 'hot' colormap for better visualization
+        axes[4].set_title(f"MSE Colormap\nTotal MSE: {total_mse:.4f}")  # Include the total MSE in the title
+        axes[4].axis("off")
+
+        # Add a colorbar for the MSE colormap
+        cbar = fig.colorbar(mse_colormap, ax=axes[4], fraction=0.046, pad=0.04)
+        cbar.set_label("MSE")
+
+        # Add a title for the figure and save it
+        plt.suptitle(f"Step number: {number_steps}")
+        plt.savefig(f"results/noisy_trio_with_mse_{number_steps}.png", bbox_inches="tight")
+        plt.close(fig) 
 
 def create_animation(folder_path, output_file='animation.gif'):
     # Collect and sort PNG images in the folder
@@ -155,7 +280,8 @@ def create_animation(folder_path, output_file='animation.gif'):
     anim = FuncAnimation(fig, update, frames=len(images), interval=len(images), blit=True)
 
     # Save the animation as a GIF
-    anim.save(output_file, writer='pillow', fps=1000 // len(images))
+    anim.save(output_file, writer='pillow', fps=100 // len(images))
+    # print(len(images))
 
     print(f"Animation saved as {output_file}")
 
@@ -223,6 +349,31 @@ def save_images(images, path, **kwargs):
     im = Image.fromarray(ndarr)
     im.save(path)
 
+def normalize_tensor(tensor):
+    """
+    Normalizes a tensor to the range [0, 1].
+    """
+    tensor_min = tensor.min()
+    tensor_max = tensor.max()
+    if tensor_max - tensor_min == 0:
+        return torch.zeros_like(tensor)
+    else:
+        return (tensor - tensor_min) / (tensor_max - tensor_min)
+
+def get_middle_slice(tensor, idx=0):
+    """
+    Extracts the middle slice along the depth dimension from a 3D tensor.
+
+    Args:
+        tensor (torch.Tensor): Tensor of shape (B, C, D, H, W)
+        idx (int): Index of the image in the batch
+
+    Returns:
+        torch.Tensor: The middle slice of the specified image
+    """
+    middle_slice_index = tensor.shape[2] // 2  # D dimension
+    return tensor[idx, 0, middle_slice_index, :, :].detach().cpu()
+
 # Custom Dataset Class
 class NiftiDataset(Dataset):
     def __init__(self, root_dir, transform=None):
@@ -266,7 +417,21 @@ class NiftiDataset(Dataset):
         if self.transform:
             for t in self.transform:
                 img = t(img)
+                print('IMAGE SHAPE:', img.shape)
         return img
+
+def save_best_model(model, current_mse, epoch, best_mse, checkpoint_dir):
+    # if current_mse < best_mse:
+    #     best_mse = current_mse
+    #     checkpoint_path = os.path.join(checkpoint_dir, f"epoch-{epoch}.ckpt")
+    #     torch.save(model.state_dict(), checkpoint_path)
+    #     logging.info(f"Saved new best model with MSE {best_mse:.6f} at epoch {epoch}")
+        # Save the model every 5 epochs
+    if epoch % 5 == 0:
+        epoch_checkpoint_path = os.path.join(checkpoint_dir, f"epoch-{epoch}.ckpt")
+        torch.save(model.state_dict(), epoch_checkpoint_path)
+        logging.info(f"Saved model checkpoint at epoch {epoch}")
+    # return best_mse
 
 def get_transforms(is_train=True, args=None):
     if is_train:
@@ -274,8 +439,8 @@ def get_transforms(is_train=True, args=None):
             LoadImaged(keys=['image']),
             EnsureChannelFirstd(keys=['image']),
             # RandSpatialCropd(keys=['image'], roi_size=(args.crop_depth, args.crop_height, args.crop_width), random_center=True, random_size=False),
-            Spacingd(keys=['image'], pixdim=(args.pixdim, args.pixdim, args.pixdim), mode=('bilinear')),
-            # Resized(keys=['image'], spatial_size=(args.depth_size, args.img_size, args.img_size)),
+            # Spacingd(keys=['image'], pixdim=(args.pixdim, args.pixdim, args.pixdim), mode=('bilinear')),
+            Resized(keys=['image'], spatial_size=(args.img_size, args.img_size, args.img_depth), mode=('trilinear')),
             NormalizeIntensityd(keys=['image'], nonzero=True),#, channel_wise=True),
             ToTensord(keys=['image']),
         ])
@@ -305,24 +470,75 @@ def get_transforms(is_train=True, args=None):
 #                             data_dicts.append({'image': file_path})
 #     return data_dicts
 def get_data_dict(filepath, mode='train'):
-    # Load the data from the CSV file
-    df = pd.read_csv(filepath)
-
-    data_dict = []
+    """
+    Load a TSV file and return a data dictionary formatted for MONAI's Dataset class.
+    """
+    # Load data from the TSV file
+    participants = pd.read_csv(filepath, sep='\t')
     
-    # Filter the DataFrame based on the mode in the 'traintest' column
+    # Ensure required columns exist
+    required_columns = ['sub_id_bids', 'participant_id', 'scan_id']
+    for col in required_columns:
+        if col not in participants.columns:
+            raise ValueError(f"The required column '{col}' is not found in the provided file.")
+    
+    # Base path
+    base_path = os.path.dirname(filepath)
+    
+    # Split unique subjects into train and test sets (80% train, 20% test)
+    unique_subjects = participants['sub_id_bids'].unique()
+    train_subjects, test_subjects = train_test_split(
+        unique_subjects, test_size=0.2, random_state=42
+    )
+    
+    # Filter based on mode
     if mode == 'train':
-        filtered_df = df[df['traintest'] == 'train']
+        filtered_df = participants[participants['sub_id_bids'].isin(train_subjects)]
     elif mode == 'test':
-        filtered_df = df[df['traintest'] == 'test']
+        filtered_df = participants[participants['sub_id_bids'].isin(test_subjects)]
     else:
-        raise ValueError("Mode must be 'train' or 'test'")
+        raise ValueError("Invalid mode. Use 'train' or 'test'.")
     
-    for i in range(len(filtered_df)):
-        # Use double quotes for column access inside an f-string
-        data_dict.append({'image': f"/home/andjela/joplin-intra-inter/CP_rigid_trios/CP/{filtered_df['sub_id_bids'].iloc[i]}/{filtered_df['trio_id'].iloc[i]}/{filtered_df['scan_id'].iloc[i]}.nii.gz"})
+    # Construct the data dictionary
+    data_dict = []
+    for _, row in filtered_df.iterrows():
+        # Define the directory where the file should be located
+        brain_extraction_dir = os.path.join(
+            base_path,
+            f"work_dir2/cbf2mni_wdir/{row['participant_id']}/{row['scan_id']}/wf/brainextraction/"
+        )
+        
+        # Use glob to find the file matching the pattern
+        matched_files = glob.glob(os.path.join(brain_extraction_dir, "*_dtype.nii.gz"))
+        
+        # Check if exactly one file matches
+        if len(matched_files) == 1:
+            image_path = matched_files[0]
+            data_dict.append({"image": image_path})
+        elif len(matched_files) > 1:
+            raise ValueError(f"Multiple files match the pattern in {brain_extraction_dir}")
+        else:
+            raise FileNotFoundError(f"No file matches the pattern in {brain_extraction_dir}")
     
     return data_dict
+    # Load the data from the CSV file
+    # df = pd.read_csv(filepath)
+
+    # data_dict = []
+    
+    # # Filter the DataFrame based on the mode in the 'traintest' column
+    # if mode == 'train':
+    #     filtered_df = df[df['traintest'] == 'train']
+    # elif mode == 'test':
+    #     filtered_df = df[df['traintest'] == 'test']
+    # else:
+    #     raise ValueError("Mode must be 'train' or 'test'")
+    
+    # for i in range(len(filtered_df)):
+    #     # Use double quotes for column access inside an f-string
+    #     data_dict.append({'image': f"{os.path.dirname(filepath)}/{filtered_df['sub_id_bids'].iloc[i]}/{filtered_df['trio_id'].iloc[i]}/{filtered_df['scan_id'].iloc[i]}.nii.gz"})
+    
+    # return data_dict
 # Custom Transforms for 3D Data
 class Resize3D:
     def __init__(self, size):
@@ -342,6 +558,67 @@ class Normalize3D:
         if std == 0:
             std = 1
         return (img - mean) / std
+    
+def validate_image_shapes(filepath, mode='train'):
+    """
+    Validate image shapes in the dataset and print paths of images that are not 512x512x210.
+    """
+    # Load data from the TSV file
+    participants = pd.read_csv(filepath, sep='\t')
+    
+    # Ensure required columns exist
+    required_columns = ['sub_id_bids', 'participant_id', 'scan_id']
+    for col in required_columns:
+        if col not in participants.columns:
+            raise ValueError(f"The required column '{col}' is not found in the provided file.")
+    
+    # Base path
+    base_path = os.path.dirname(filepath)
+    
+    # Split unique subjects into train and test sets (80% train, 20% test)
+    unique_subjects = participants['sub_id_bids'].unique()
+    train_subjects, test_subjects = train_test_split(
+        unique_subjects, test_size=0.2, random_state=42
+    )
+    
+    # Filter based on mode
+    if mode == 'train':
+        filtered_df = participants[participants['sub_id_bids'].isin(train_subjects)]
+        print(f"The number of unique participant_ids: {filtered_df['participant_id'].nunique()}")
+
+    elif mode == 'test':
+        filtered_df = participants[participants['sub_id_bids'].isin(test_subjects)]
+    else:
+        raise ValueError("Invalid mode. Use 'train' or 'test'.")
+    
+    # Validate image shapes
+    invalid_images = []
+    valid_images = []
+    for _, row in filtered_df.iterrows():
+        brain_extraction_dir = os.path.join(
+            base_path,
+            f"work_dir2/cbf2mni_wdir/{row['participant_id']}/{row['scan_id']}/wf/brainextraction/"
+        )
+        matched_files = glob.glob(os.path.join(brain_extraction_dir, "*_dtype.nii.gz"))
+        
+        if len(matched_files) == 1:
+            image_path = matched_files[0]
+            try:
+                img = nib.load(image_path)
+                shape = img.shape
+                # print(shape, image_path)
+                
+                if shape != (512, 512, 210):
+                    invalid_images.append((image_path, shape))
+                valid_images.append(image_path)
+            except Exception as e:
+                print(f"Error loading image {image_path}: {e}")
+        elif len(matched_files) > 1:
+            print(f"Multiple files match the pattern in {brain_extraction_dir}")
+        else:
+            print(f"No file matches the pattern in {brain_extraction_dir}")
+    
+    return invalid_images, valid_images
 
 def get_data(args):
     # Prepare data dictionaries
@@ -410,10 +687,38 @@ def get_data(args):
 #     return train_dataloader, val_dataset
 
 def setup_logging(run_name):
+    # Create necessary directories
     os.makedirs("models", exist_ok=True)
     os.makedirs("results", exist_ok=True)
     os.makedirs(os.path.join("models", run_name), exist_ok=True)
     os.makedirs(os.path.join("results", run_name), exist_ok=True)
+    
+    # Define the log file path under models/run_name
+    log_file = os.path.join("models", run_name, f"{run_name}.log")
+
+    # Configure logging
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)  # Set the logging level to INFO
+
+    # Remove all handlers associated with the root logger object
+    if logger.hasHandlers():
+        logger.handlers.clear()
+
+    # Create handlers
+    c_handler = logging.StreamHandler()  # Console handler
+    f_handler = logging.FileHandler(log_file)  # File handler
+    c_handler.setLevel(logging.INFO)
+    f_handler.setLevel(logging.INFO)
+
+    # Create formatters and add them to handlers
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    c_handler.setFormatter(formatter)
+    f_handler.setFormatter(formatter)
+
+    # Add handlers to the logger
+    logger.addHandler(c_handler)
+    logger.addHandler(f_handler)
+
 
 def mk_folders(run_name):
     os.makedirs("models", exist_ok=True)
