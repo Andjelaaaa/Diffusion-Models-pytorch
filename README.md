@@ -1,5 +1,5 @@
 # Results
-The displayed results are based on the implementation of a DDPM variant, with parameters specified in the ddpm.py file. The animation illustrates the generated samples at every 10th epoch throughout the training process, which spans 1,000 epochs.
+The displayed results are based on the implementation of a DDPM variant trained on the Calgary Preschool Dataset, with parameters specified in the ddpm.py file. The animation illustrates the generated samples at every 10th epoch throughout the training process, which spans 1,000 epochs.
 
 ![alt text](animation.gif)
 # Diffusion Models
