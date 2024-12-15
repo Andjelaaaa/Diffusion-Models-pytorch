@@ -1,5 +1,6 @@
 # Results
 The displayed results are based on the implementation of a DDPM variant, with parameters specified in the ddpm.py file. The animation illustrates the generated samples at every 10th epoch throughout the training process, which spans 1,000 epochs.
+
 ![alt text](animation.gif)
 # Diffusion Models
 This is an easy-to-understand implementation of diffusion models within 100 lines of code. Different from other implementations, this code doesn't use the lower-bound formulation for sampling and strictly follows Algorithm 1 from the [DDPM](https://arxiv.org/pdf/2006.11239.pdf) paper, which makes it extremely short and easy to follow. There are two implementations: `conditional` and `unconditional`. Furthermore, the conditional code also implements Classifier-Free-Guidance (CFG) and Exponential-Moving-Average (EMA). Below you can find two explanation videos for the theory behind diffusion models and the implementation.
